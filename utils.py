@@ -21,7 +21,7 @@ import logging
 import socket
 import time
 import settings
-
+import struct
 try:
 	import sqlite3
 except:
@@ -55,6 +55,10 @@ def RespondToThisIP(ClientIp):
 	if ClientIp.startswith('127.0.0.'):
 		return False
 
+	if settings.Config.AutoIgnore and ClientIp in settings.Config.AutoIgnoreList:
+		print color('[*]', 3, 1), 'Received request from auto-ignored client %s, not answering.' % ClientIp
+		return False
+
 	if len(settings.Config.RespondTo) and ClientIp not in settings.Config.RespondTo:
 		return False
 
@@ -86,7 +90,6 @@ def OsInterfaceIsSupported():
 		return False if IsOsX() else True
 	else:
 		return False
-
 def IsOsX():
     Os_version = sys.platform
     if Os_version == "darwin":
@@ -94,23 +97,23 @@ def IsOsX():
     else:
         return False
 
-
 def FindLocalIP(Iface, OURIP):
 
 	if Iface == 'ALL':
 		return '0.0.0.0'
 
 	try:
-            
-               if IsOsX():
-	           return OURIP
-               else:
-	           s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-	           s.setsockopt(socket.SOL_SOCKET, 25, Iface+'\0')
-	           s.connect(("127.0.0.1",9))#RFC 863
-	           ret = s.getsockname()[0]
-	           s.close()
-	           return ret
+		if IsOsX():
+			return OURIP
+		elif OURIP == None:
+			s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			s.setsockopt(socket.SOL_SOCKET, 25, Iface+'\0')
+			s.connect(("127.0.0.1",9))#RFC 863
+			ret = s.getsockname()[0]
+			s.close()
+			return ret
+		else:
+			return OURIP
                     
 	except socket.error:
 		print color("[!] Error: %s: Interface not found" % Iface, 1)
@@ -166,14 +169,20 @@ def SaveToDb(result):
 	logfile = os.path.join(settings.Config.ResponderPATH, 'logs', fname)
 
 	cursor = sqlite3.connect(settings.Config.DatabaseFile)
+        # We add a text factory to support different charsets
+	cursor.text_factory = sqlite3.Binary
 	res = cursor.execute("SELECT COUNT(*) AS count FROM responder WHERE module=? AND type=? AND LOWER(user)=LOWER(?)", (result['module'], result['type'], result['user']))
 	(count,) = res.fetchone()
 
 	if count == 0:
 		
-		# Write JtR-style hash string to file
+		# If we obtained cleartext credentials, write them to file
+		# Otherwise, write JtR-style hash string to file
 		with open(logfile,"a") as outf:
-			outf.write(result['fullhash'])
+			if len(result['cleartext']):
+				outf.write('%s:%s' % (result['user'], result['cleartext']))
+			else:
+				outf.write(result['fullhash'])
 			outf.write("\n")
 			outf.close()
 
@@ -200,9 +209,16 @@ def SaveToDb(result):
 			print text("[%s] %s Hash     : %s" % (result['module'], result['type'], color(result['fullhash'], 3)))
 		elif len(result['hash']):
 			print text("[%s] %s Hash     : %s" % (result['module'], result['type'], color(result['hash'], 3)))
-			
+
+		# Appending auto-ignore list if required
+		# Except if this is a machine account's hash
+		if settings.Config.AutoIgnore and not result['user'].endswith('$'):
+
+			settings.Config.AutoIgnoreList.append(result['client'])
+			print color('[*] Adding client %s to auto-ignore list' % result['client'], 4, 1)
+
 	else:
-		print color('[*]', 2, 1), 'Skipping previously captured hash for %s' % result['user']
+		print color('[*]', 3, 1), 'Skipping previously captured hash for %s' % result['user']
 
 
 def Parse_IPV6_Addr(data):
@@ -262,7 +278,7 @@ def banner():
 	print banner
 	print "\n           \033[1;33mNBT-NS, LLMNR & MDNS %s\033[0m" % settings.__version__
 	print ""
-	print "  Original work by Laurent Gaffie (lgaffie@trustwave.com)"
+	print "  Author: Laurent Gaffie (laurent.gaffie@gmail.com)"
 	print "  To kill this script hit CRTL-C"
 	print ""
 
@@ -367,3 +383,7 @@ def hexdump(src, l=0x16):
 		res.append(('%08X:  %-'+str(l*(2+1)+1)+'s  |%s|') % (i, hexa, text))
 
 	return '\n'.join(res)
+
+def longueur(payload):
+    length = struct.pack(">i", len(''.join(payload)))
+    return length
